@@ -66,10 +66,27 @@ def _checar_mercado_livre(mlb_id, link):
 
 
 def _checar_shopee(link):
-    from playwright.sync_api import sync_playwright
-
     if not link:
         return _resultado(STATUS_NAO_VERIFICADO, link, "Sem link de produto na aba De-Para")
+
+    # 1) tenta primeiro o endpoint interno que o próprio site da Shopee usa
+    #    pra carregar os dados do produto (sem abrir navegador nenhum) — mais
+    #    rápido e não passa pela parede de login/idioma da página pública.
+    #    Se não der pra extrair o ID do link, ou a chamada não devolver um
+    #    status claro (bloqueada, formato mudou, etc.), cai pro método via
+    #    navegador abaixo.
+    resultado_api = None
+    try:
+        resultado_api = _checar_shopee_api(link)
+    except Exception as e:
+        print(f"  (aviso: API interna da Shopee falhou, tentando via navegador: {e})")
+    if resultado_api is not None:
+        return resultado_api
+
+    # 2) fallback: navegador real (Playwright) — mais lento e sujeito à
+    #    parede de login/idioma, mas cobre o caso de a API interna ter
+    #    mudado ou não ter devolvido nada.
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -94,6 +111,21 @@ def _checar_shopee(link):
                 texto_visivel = pagina.inner_text("body")
             except Exception:
                 pass
+
+            # A Shopee pode exigir login pra mostrar a página do produto quando
+            # detecta acesso automatizado (visto nos prints de debug) — isso não
+            # é o mesmo que o produto estar inativo, então checa isso ANTES de
+            # qualquer outra lógica e devolve NÃO VERIFICADO (não INATIVO) pra
+            # não gerar falso alarme.
+            texto_lower_check = texto_visivel.lower()
+            if any(
+                termo in texto_lower_check
+                for termo in ("login necessário", "faça login", "ainda não está logado")
+            ):
+                return _resultado(
+                    STATUS_NAO_VERIFICADO, link,
+                    "Shopee exigiu login pra ver a página (bloqueio de acesso automatizado) [via navegador]",
+                )
 
             # 1) tenta a IA primeiro (mais robusta a falso positivo por palavra-chave
             #    solta na página) — se não tiver GEMINI_API_KEY configurada, ou se a
@@ -153,6 +185,68 @@ def _checar_shopee(link):
             )
         finally:
             browser.close()
+
+
+def _extrair_shopid_itemid(link):
+    """Links de produto da Shopee têm o formato
+    '.../nome-do-produto-i.<shopid>.<itemid>' — extrai os 2 números. Se o
+    link for um encurtado (ex.: s.shopee.com.br/...), tenta seguir o
+    redirecionamento primeiro pra chegar no link canônico."""
+    if not link:
+        return None, None
+    m = re.search(r"-i\.(\d+)\.(\d+)", link)
+    if m:
+        return m.group(1), m.group(2)
+    try:
+        resp = requests.get(link, timeout=10, allow_redirects=True)
+        m = re.search(r"-i\.(\d+)\.(\d+)", resp.url)
+        if m:
+            return m.group(1), m.group(2)
+    except Exception:
+        pass
+    return None, None
+
+
+def _checar_shopee_api(link):
+    """Chama direto o endpoint interno que o próprio site da Shopee usa pra
+    carregar os dados do produto (o mesmo que o navegador chamaria por
+    baixo dos panos) — sem abrir navegador, então não passa pela parede de
+    login/idioma. Não é uma API pública documentada/oficial: pode parar de
+    funcionar se a Shopee mudar o formato. Retorna None se não conseguir um
+    status confiável (aí quem chamou cai pro método via navegador)."""
+    shopid, itemid = _extrair_shopid_itemid(link)
+    if not shopid or not itemid:
+        return None
+
+    url = f"https://shopee.com.br/api/v4/item/get?itemid={itemid}&shopid={shopid}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/127.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": link,
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code != 200:
+        return None
+    try:
+        corpo = resp.json()
+    except ValueError:
+        return None
+
+    dados = corpo.get("data")
+    if not dados:
+        # resposta sem "data" costuma ser erro/bloqueio (ex.: {"error": 4, ...})
+        return None
+
+    item_status = dados.get("item_status", "")
+    if item_status == "NORMAL":
+        return _resultado(STATUS_ATIVO, link, "(API interna Shopee) status: NORMAL")
+    if item_status:
+        return _resultado(STATUS_INATIVO, link, f"(API interna Shopee) status: {item_status}")
+    return None
 
 
 def _fechar_tela_idioma(pagina):
