@@ -96,12 +96,24 @@ def _checar_shopee(link):
             # 1) tenta a IA primeiro (mais robusta a falso positivo por palavra-chave
             #    solta na página) — se não tiver GEMINI_API_KEY configurada, ou se a
             #    chamada falhar por qualquer motivo, cai no método por palavra-chave.
+            # Guarda SEMPRE o motivo de não ter usado a IA (não configurada, erro na
+            # chamada, ou a própria IA achou que a página não é de produto real) —
+            # isso aparece na observação, pra não precisar abrir o log do GitHub
+            # Actions pra saber o que aconteceu.
             resultado_ia = None
-            try:
-                resultado_ia = _perguntar_gemini(texto_visivel)
-            except Exception as e:
-                resultado_ia = None
-                print(f"  (aviso: chamada à IA falhou, usando método por palavra-chave: {e})")
+            motivo_sem_ia = "GEMINI_API_KEY não configurada"
+            if GEMINI_API_KEY:
+                try:
+                    resultado_ia = _perguntar_gemini(texto_visivel)
+                    if resultado_ia is not None and resultado_ia.get("disponivel") is None:
+                        motivo_sem_ia = (
+                            "IA identificou a página como bloqueio/captcha/erro, não um "
+                            f"produto real ({resultado_ia.get('motivo', 'sem detalhe')})"
+                        )
+                except Exception as e:
+                    resultado_ia = None
+                    motivo_sem_ia = f"chamada à IA falhou: {e}"
+                    print(f"  (aviso: chamada à IA falhou, usando método por palavra-chave: {e})")
 
             if resultado_ia is not None and resultado_ia.get("disponivel") is not None:
                 motivo = f"(IA) {resultado_ia.get('motivo', '')}"
@@ -109,11 +121,15 @@ def _checar_shopee(link):
                     return _resultado(STATUS_ATIVO, link, motivo)
                 return _resultado(STATUS_INATIVO, link, motivo)
 
-            # 2) método antigo, por palavra-chave (fallback)
+            # 2) método antigo, por palavra-chave (fallback) — sempre explica no
+            #    final da observação por que não usou a IA nessa checagem.
             texto = texto_visivel.lower() or pagina.content().lower()
             for termo in ("produto não encontrado", "esgotado", "indisponível"):
                 if termo in texto:
-                    return _resultado(STATUS_INATIVO, link, f"Página indica indisponibilidade ('{termo}') [sem IA]")
+                    return _resultado(
+                        STATUS_INATIVO, link,
+                        f"Página indica indisponibilidade ('{termo}') [sem IA: {motivo_sem_ia}]",
+                    )
 
             botao_ok = False
             for sel in ["button:has-text('Adicionar ao carrinho')", "button:has-text('Comprar agora')"]:
@@ -128,8 +144,11 @@ def _checar_shopee(link):
             # Shopee calcula frete pelo endereço salvo na conta logada, não por um
             # campo de CEP na página pública — então aqui o critério é só o botão.
             if botao_ok:
-                return _resultado(STATUS_ATIVO, link, "[sem IA]")
-            return _resultado(STATUS_INATIVO, link, "Botão de compra ausente/desabilitado [sem IA]")
+                return _resultado(STATUS_ATIVO, link, f"[sem IA: {motivo_sem_ia}]")
+            return _resultado(
+                STATUS_INATIVO, link,
+                f"Botão de compra ausente/desabilitado [sem IA: {motivo_sem_ia}]",
+            )
         finally:
             browser.close()
 
