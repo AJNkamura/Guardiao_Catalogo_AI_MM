@@ -43,7 +43,14 @@ def _resultado(status, link, observacao=""):
 
 def _checar_mercado_livre(mlb_id, link):
     url = f"https://api.mercadolibre.com/items/{mlb_id}"
-    resp = requests.get(url, timeout=10)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/127.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+    }
+    resp = requests.get(url, headers=headers, timeout=10)
     if resp.status_code == 404:
         return _resultado(STATUS_INATIVO, link, "Item não encontrado na API (removido/inexistente)")
     resp.raise_for_status()
