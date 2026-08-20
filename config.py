@@ -45,6 +45,13 @@ EMAIL_RECIPIENTS = [
 # --- CEP fictício usado para cotar frete -------------------------------------
 CEP_TESTE = os.environ.get("CEP_TESTE", "01310-100")
 
+# --- IA para interpretar a página (Shopee) -----------------------------------
+# Gerar uma chave gratuita em https://aistudio.google.com/apikey
+# Sem essa chave configurada, cai automaticamente no método antigo (busca por
+# palavra-chave "esgotado"/"indisponível" no texto da página).
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
 # --- Canais em produção (escopo inicial: só os 2 confirmados) ----------------
 # Cada bloco na aba de Monitoramento_GMV ocupa 8 colunas:
 # ID Produto | Nome Produto | data1..data5 | Total geral
