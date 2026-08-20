@@ -2,9 +2,8 @@ name: Monitor diário de produtos (top 100 por canal)
 
 on:
   schedule:
-    # 09:00 America/Sao_Paulo = 12:00 UTC (ajustar se mudar horário de verão)
     - cron: "0 12 * * *"
-  workflow_dispatch: {}  # permite rodar manualmente pela aba Actions
+  workflow_dispatch: {}
 
 jobs:
   monitorar:
@@ -23,7 +22,6 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Rodar monitoramento
-        working-directory: scripts
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
