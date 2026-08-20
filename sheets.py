@@ -20,6 +20,7 @@ Workspace da MadeiraMadeira bloqueia dar acesso a uma identidade "de fora"
 usuário — que já tem acesso à planilha — não é um novo compartilhamento,
 então essa trava não se aplica.
 """
+import time
 from datetime import date
 
 import gspread
@@ -75,10 +76,33 @@ def _client():
     return gspread.authorize(creds)
 
 
+def _com_retry(fn, *args, **kwargs):
+    """
+    A planilha é grande/complexa e o Google Sheets ocasionalmente devolve um
+    erro 500 "Internal error" transitório nela (já vimos isso acontecer).
+    Tenta de novo com backoff antes de desistir.
+    """
+    ultimo_erro = None
+    for tentativa in range(4):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            ultimo_erro = e
+            status = e.response.status_code if getattr(e, "response", None) is not None else None
+            if status and status < 500:
+                raise  # erro do nosso lado (permissão, range inválido, etc.) — não adianta tentar de novo
+            time.sleep(3 * (tentativa + 1))
+    raise ultimo_erro
+
+
 def _worksheet_by_gid(sh, gid):
-    for ws in sh.worksheets():
-        if ws.id == gid:
-            return ws
+    # Pede só sheetId + title (não a formatação/grade inteira) pra reduzir a
+    # chance de erro 500 do lado do Google nessa planilha grande.
+    meta = _com_retry(sh.fetch_sheet_metadata, params={"fields": "sheets.properties"})
+    for s in meta.get("sheets", []):
+        props = s.get("properties", {})
+        if props.get("sheetId") == gid:
+            return sh.worksheet(props["title"])
     raise RuntimeError(f"Nenhuma aba encontrada com gid={gid}")
 
 
@@ -98,7 +122,7 @@ def ler_produtos_zerados():
     """
     sh = _client().open_by_key(SPREADSHEET_ID)
     aba = _worksheet_by_gid(sh, GID_MONITORAMENTO_GMV)
-    todas_linhas = aba.get_all_values()  # lista de listas, 1 por linha da planilha
+    todas_linhas = _com_retry(aba.get_all_values)  # lista de listas, 1 por linha da planilha
 
     zerados = []
     for canal_key, cfg in CANAIS.items():
@@ -150,8 +174,8 @@ def ler_depara():
     id_produto -> {id_marketplace_produto, link}
     """
     sh = _client().open_by_key(SPREADSHEET_ID)
-    aba = sh.worksheet(ABA_DEPARA)
-    todas_linhas = aba.get_all_values()
+    aba = _com_retry(sh.worksheet, ABA_DEPARA)
+    todas_linhas = _com_retry(aba.get_all_values)
 
     resultado = {canal_key: {} for canal_key in CANAIS}
     for canal_key, cfg in CANAIS.items():
@@ -177,9 +201,9 @@ def ler_depara():
 def escrever_alertas(resultados):
     sh = _client().open_by_key(SPREADSHEET_ID)
     try:
-        aba = sh.worksheet(ABA_ALERTAS)
+        aba = _com_retry(sh.worksheet, ABA_ALERTAS)
     except gspread.WorksheetNotFound:
-        aba = sh.add_worksheet(title=ABA_ALERTAS, rows=1000, cols=len(ALERTAS_HEADER))
+        aba = _com_retry(sh.add_worksheet, title=ABA_ALERTAS, rows=1000, cols=len(ALERTAS_HEADER))
 
     hoje = date.today().isoformat()
     linhas = [ALERTAS_HEADER]
@@ -195,6 +219,6 @@ def escrever_alertas(resultados):
                 r.get("observacao", ""),
             ]
         )
-    aba.clear()
-    aba.update(values=linhas, range_name="A1")
+    _com_retry(aba.clear)
+    _com_retry(aba.update, values=linhas, range_name="A1")
     return len(resultados)
