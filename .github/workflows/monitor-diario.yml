@@ -1,0 +1,33 @@
+name: Monitor diário de produtos (top 100 por canal)
+
+on:
+  schedule:
+    # 09:00 America/Sao_Paulo = 12:00 UTC (ajustar se mudar horário de verão)
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}  # permite rodar manualmente pela aba Actions
+
+jobs:
+  monitorar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Rodar monitoramento
+        working-directory: scripts
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+        run: python main.py
