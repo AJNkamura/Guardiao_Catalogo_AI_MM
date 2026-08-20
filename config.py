@@ -6,6 +6,7 @@ No GitHub Actions elas vêm de Secrets; localmente, de um arquivo .env (não
 versionado).
 """
 import os
+import re
 
 # --- Planilha Google Sheets -------------------------------------------------
 SPREADSHEET_ID = os.environ.get(
@@ -38,7 +39,7 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 EMAIL_RECIPIENTS = [
-    e.strip() for e in os.environ.get("EMAIL_RECIPIENTS", "").split(",") if e.strip()
+    e.strip() for e in re.split(r"[,;]", os.environ.get("EMAIL_RECIPIENTS", "")) if e.strip()
 ]
 
 # --- CEP fictício usado para cotar frete -------------------------------------
