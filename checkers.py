@@ -85,6 +85,8 @@ def _checar_shopee(link):
             pagina.goto(link, timeout=20000, wait_until="domcontentloaded")
             pagina.wait_for_timeout(2000)
 
+            _fechar_tela_idioma(pagina)
+
             _salvar_screenshot_debug(pagina, link)
 
             texto_visivel = ""
@@ -151,6 +153,26 @@ def _checar_shopee(link):
             )
         finally:
             browser.close()
+
+
+def _fechar_tela_idioma(pagina):
+    """A Shopee às vezes mostra uma tela inicial de 'Selecione seu idioma'
+    antes da página do produto — normalmente na primeira visita da sessão,
+    quando não há cookie de idioma salvo (é sempre o caso aqui, já que cada
+    checagem abre uma sessão nova). Se aparecer, clica em 'Português (BR)' e
+    espera a página do produto real carregar. Se não aparecer, não faz nada
+    (já deve estar direto na página do produto)."""
+    try:
+        botao = pagina.locator("text=Português (BR)").first
+        if botao.count() > 0 and botao.is_visible(timeout=3000):
+            botao.click()
+            pagina.wait_for_timeout(3000)
+            try:
+                pagina.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _salvar_screenshot_debug(pagina, link):
