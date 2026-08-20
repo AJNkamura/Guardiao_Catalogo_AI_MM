@@ -12,14 +12,19 @@ porque é a própria interface pretendida para máquinas). Shopee usa Playwright
 eventualmente bloquear mesmo assim; por isso toda checagem tem retry e um
 status "NÃO VERIFICADO" em vez de forçar um resultado errado.
 """
+import json
+import os
+import re
 import time
 import requests
 
-from config import CEP_TESTE
+from config import CEP_TESTE, GEMINI_API_KEY, GEMINI_MODEL
 
 STATUS_ATIVO = "ATIVO"
 STATUS_INATIVO = "INATIVO"
 STATUS_NAO_VERIFICADO = "NÃO VERIFICADO"
+
+PASTA_DEBUG_SCREENSHOTS = "debug_screenshots"
 
 
 def checar_produto(canal_key, id_marketplace_produto, link=""):
@@ -78,12 +83,37 @@ def _checar_shopee(link):
         pagina = contexto.new_page()
         try:
             pagina.goto(link, timeout=20000, wait_until="domcontentloaded")
-            pagina.wait_for_timeout(1500)
-            texto = pagina.content().lower()
+            pagina.wait_for_timeout(2000)
 
+            _salvar_screenshot_debug(pagina, link)
+
+            texto_visivel = ""
+            try:
+                texto_visivel = pagina.inner_text("body")
+            except Exception:
+                pass
+
+            # 1) tenta a IA primeiro (mais robusta a falso positivo por palavra-chave
+            #    solta na página) — se não tiver GEMINI_API_KEY configurada, ou se a
+            #    chamada falhar por qualquer motivo, cai no método por palavra-chave.
+            resultado_ia = None
+            try:
+                resultado_ia = _perguntar_gemini(texto_visivel)
+            except Exception as e:
+                resultado_ia = None
+                print(f"  (aviso: chamada à IA falhou, usando método por palavra-chave: {e})")
+
+            if resultado_ia is not None and resultado_ia.get("disponivel") is not None:
+                motivo = f"(IA) {resultado_ia.get('motivo', '')}"
+                if resultado_ia["disponivel"]:
+                    return _resultado(STATUS_ATIVO, link, motivo)
+                return _resultado(STATUS_INATIVO, link, motivo)
+
+            # 2) método antigo, por palavra-chave (fallback)
+            texto = texto_visivel.lower() or pagina.content().lower()
             for termo in ("produto não encontrado", "esgotado", "indisponível"):
                 if termo in texto:
-                    return _resultado(STATUS_INATIVO, link, f"Página indica indisponibilidade ('{termo}')")
+                    return _resultado(STATUS_INATIVO, link, f"Página indica indisponibilidade ('{termo}') [sem IA]")
 
             botao_ok = False
             for sel in ["button:has-text('Adicionar ao carrinho')", "button:has-text('Comprar agora')"]:
@@ -97,10 +127,54 @@ def _checar_shopee(link):
 
             # Shopee calcula frete pelo endereço salvo na conta logada, não por um
             # campo de CEP na página pública — então aqui o critério é só o botão.
-            # Se quisermos replicar a cotação de frete com CEP fictício, precisamos
-            # de uma conta Shopee logada no navegador (ajustar se for bloqueante).
             if botao_ok:
-                return _resultado(STATUS_ATIVO, link)
-            return _resultado(STATUS_INATIVO, link, "Botão de compra ausente/desabilitado")
+                return _resultado(STATUS_ATIVO, link, "[sem IA]")
+            return _resultado(STATUS_INATIVO, link, "Botão de compra ausente/desabilitado [sem IA]")
         finally:
             browser.close()
+
+
+def _salvar_screenshot_debug(pagina, link):
+    """Salva um print da página pra inspeção manual (sobe como artifact no
+    GitHub Actions) — ajuda a diagnosticar se o site está bloqueando o
+    navegador automático (página de captcha/erro) em vez de mostrar o produto."""
+    try:
+        os.makedirs(PASTA_DEBUG_SCREENSHOTS, exist_ok=True)
+        nome = re.sub(r"[^0-9]", "", link)[-15:] or "shopee"
+        pagina.screenshot(path=f"{PASTA_DEBUG_SCREENSHOTS}/shopee_{nome}.png", full_page=True)
+    except Exception:
+        pass  # debug não pode quebrar a checagem principal
+
+
+def _perguntar_gemini(texto_pagina):
+    """Manda o texto visível da página pro Gemini e pede pra julgar se o
+    produto está disponível. Retorna None se GEMINI_API_KEY não estiver
+    configurada (aí quem chamou cai no método por palavra-chave)."""
+    if not GEMINI_API_KEY or not texto_pagina:
+        return None
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        f"?key={GEMINI_API_KEY}"
+    )
+    prompt = (
+        "Você está analisando o texto visível (extraído por um navegador automático) de uma "
+        "página de produto de e-commerce (Shopee). Baseado SOMENTE no texto abaixo, determine "
+        "se esse produto está disponível para compra agora (tem botão de comprar/adicionar ao "
+        "carrinho habilitado, sem aviso de esgotado/indisponível/anúncio removido).\n\n"
+        "Se o texto parecer ser uma página de erro, bloqueio, captcha, verificação de robô, ou "
+        "não parecer ser a página de um produto de verdade, marque \"disponivel\" como null.\n\n"
+        f"TEXTO DA PÁGINA:\n{texto_pagina[:8000]}\n\n"
+        'Responda SOMENTE com um JSON, sem markdown, no formato exato: '
+        '{"disponivel": true, "motivo": "razão em até 15 palavras"} '
+        "(disponivel pode ser true, false ou null)."
+    )
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    resp = requests.post(url, json=body, timeout=20)
+    resp.raise_for_status()
+    texto_resp = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    texto_resp = texto_resp.strip()
+    if texto_resp.startswith("```"):
+        texto_resp = texto_resp.strip("`")
+        texto_resp = texto_resp.replace("json\n", "", 1).replace("json", "", 1)
+    return json.loads(texto_resp)
